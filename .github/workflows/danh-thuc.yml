@@ -1,0 +1,47 @@
+name: Danh thuc box instabox
+
+on:
+  schedule:
+    - cron: "0 */7 * * *" # gio UTC: 0, 7, 14, 21 (lan 21h -> 0h chi cach 3 tieng)
+  workflow_dispatch:
+
+concurrency: danh-thuc
+
+jobs:
+  danh-thuc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+      INSTABOX_NO_UPDATE_CHECK: "1"
+      BOX: ${{ vars.BOX_NAME || 'chatbot' }}
+      SERVICE: ${{ vars.SERVICE_NAME || 'trolybaogia' }}
+    steps:
+      - name: Cai instabox CLI
+        run: npm install -g instabox@latest
+
+      - name: Bat box neu dang dung
+        run: |
+          state=$(instabox get "$BOX" --json | jq -r .state)
+          echo "Trang thai truoc: $state"
+          case "$state" in
+            running) echo "Box dang chay, khong lam gi." ;;
+            stopped) instabox start "$BOX" ;;
+            *)
+              # Box tu tam dung (idle/het gio) -> wake; box bi tam dung tay -> resume.
+              # Dang trong thoi gian cho (cooldown) thi bo qua, lan sau thu lai.
+              out=$(instabox wake "$BOX" --json 2>&1) || out=$(instabox resume "$BOX" --json 2>&1) || {
+                if echo "$out" | grep -q machine_cooldown; then
+                  echo "Box dang trong thoi gian cho cua instabox, lan chay sau se thu lai."
+                  exit 0
+                fi
+                echo "$out"; exit 1
+              }
+              ;;
+          esac
+          echo "Trang thai sau: $(instabox get "$BOX" --json | jq -r .state)"
+
+      - name: Kiem tra bot
+        run: |
+          instabox get "$BOX" --json | jq -e '.state == "running"' >/dev/null || exit 0
+          instabox exec "$BOX" -- bash -c "systemctl is-active $SERVICE || sudo systemctl restart $SERVICE; sleep 5; systemctl is-active $SERVICE"
